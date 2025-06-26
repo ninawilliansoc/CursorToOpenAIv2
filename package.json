@@ -1,0 +1,29 @@
+{
+  "name": "cursor-to-openai",
+  "version": "2.5.1",
+  "description": "Cursor to OpenAPI",
+  "author": "JiuZ-Chn",
+  "private": false,
+  "main": "index.js",
+  "url": "https://github.com/JiuZ-Chn/Cursor-To-OpenAI",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.7",
+    "express": "4.21.2",
+    "express-session": "^1.18.1",
+    "morgan": "^1.10.0",
+    "protobufjs": "^7.4.0",
+    "undici": "^7.4.0",
+    "uuid": "11.0.5"
+  },
+  "scripts": {
+    "proto": "npx pbjs -t static-module -w commonjs -o src/proto/message.js src/proto/message.proto",
+    "login": "node src/tool/cursorLogin.js",
+    "start": "node src/app.js"
+  },
+  "devDependencies": {
+    "protobufjs-cli": "^1.1.3"
+  }
+}
