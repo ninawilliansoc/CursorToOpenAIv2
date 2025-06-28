@@ -245,36 +245,68 @@ function parseRotationTime(timeString) {
 // Variables para seguimiento de rotación de cookies
 let lastUsedTokenIndex = -1;
 let lastTokenTime = 0;
+let failedTokens = new Set(); // Conjunto para almacenar índices de tokens fallidos
+let lastFailedResetTime = 0; // Tiempo de último reinicio de tokens fallidos
+const FAILED_TOKEN_RESET_TIME = 1 * 60 * 1000; // 5 minutos para reiniciar tokens fallidos
 
 /**
  * Procesa el token de autenticación para extraer la parte relevante
  * Implementa rotación de cookies si está habilitado en la configuración
  * @param {string} authToken - Token de autenticación crudo
+ * @param {boolean} forceRotate - Forzar rotación a la siguiente cookie (para manejo de errores)
  * @returns {string} Token procesado
  */
-function processAuthToken(authToken) {
+function processAuthToken(authToken, forceRotate = false) {
     if (!authToken) return null;
     
     // Dividir por comas para manejar múltiples tokens
     const keys = authToken.split(',').map((key) => key.trim());
     let tokenIndex;
     
+    // Limpiar tokens fallidos si ha pasado el tiempo de reinicio
+    const now = Date.now();
+    if (now - lastFailedResetTime > FAILED_TOKEN_RESET_TIME) {
+        failedTokens.clear();
+        lastFailedResetTime = now;
+    }
+    
     // Aplicar rotación si está habilitada y hay múltiples cookies
-    if (config.cookieRotation && config.cookieRotation.enabled && keys.length > 1) {
-        const now = Date.now();
-        const rotationTime = parseRotationTime(config.cookieRotation.time);
-        
-        // Verificar si es tiempo de rotar
-        if (lastUsedTokenIndex === -1 || now - lastTokenTime >= rotationTime) {
-            // Rotar al siguiente token
-            tokenIndex = (lastUsedTokenIndex + 1) % keys.length;
-            lastUsedTokenIndex = tokenIndex;
-            lastTokenTime = now;
-            console.log(`[AUTH] Rotando a cookie #${tokenIndex + 1} de ${keys.length}`);
+    if (keys.length > 1) {
+        // Si se fuerza la rotación o está habilitada la rotación automática
+        if (forceRotate || (config.cookieRotation && config.cookieRotation.enabled)) {
+            const rotationTime = config.cookieRotation ? parseRotationTime(config.cookieRotation.time) : 5 * 60 * 1000;
+            
+            if (forceRotate || lastUsedTokenIndex === -1 || now - lastTokenTime >= rotationTime) {
+                // Buscar el siguiente token que no haya fallado
+                let attemptsCount = 0;
+                let nextIndex = lastUsedTokenIndex;
+                
+                do {
+                    // Rotar al siguiente token
+                    nextIndex = (nextIndex + 1) % keys.length;
+                    attemptsCount++;
+                    
+                    // Si hemos probado todas las cookies y todas han fallado, reiniciar y usar cualquiera
+                    if (attemptsCount > keys.length) {
+                        console.log(`[AUTH] Todas las cookies han fallado, reiniciando estado`);
+                        failedTokens.clear();
+                        break;
+                    }
+                } while (failedTokens.has(nextIndex));
+                
+                tokenIndex = nextIndex;
+                lastUsedTokenIndex = tokenIndex;
+                lastTokenTime = now;
+                console.log(`[AUTH] ${forceRotate ? 'Forzando rotación' : 'Rotando'} a cookie #${tokenIndex + 1} de ${keys.length}`);
+            } else {
+                // Usar el mismo token si no ha pasado el tiempo de rotación
+                tokenIndex = lastUsedTokenIndex;
+                console.log(`[AUTH] Usando cookie #${tokenIndex + 1} (rotación cada ${config.cookieRotation ? config.cookieRotation.time : '5m'})`);
+            }
         } else {
-            // Usar el mismo token si no ha pasado el tiempo de rotación
-            tokenIndex = lastUsedTokenIndex;
-            console.log(`[AUTH] Usando cookie #${tokenIndex + 1} (rotación cada ${config.cookieRotation.time})`);
+            // Sin rotación, seleccionar un token aleatorio (comportamiento original)
+            tokenIndex = Math.floor(Math.random() * keys.length);
+            console.log(`[AUTH] Seleccionando cookie aleatoria #${tokenIndex + 1} de ${keys.length}`);
         }
     } else {
         // Sin rotación, seleccionar un token aleatorio (comportamiento original)
@@ -296,6 +328,31 @@ function processAuthToken(authToken) {
     return processedToken?.trim();
 }
 
+/**
+ * Marca un token como fallido para que no se use en la próxima rotación
+ * @param {string} authToken - Token de autenticación que falló
+ */
+function markTokenAsFailed(authToken) {
+    if (!authToken) return;
+    
+    const keys = authToken.split(',').map((key) => key.trim());
+    if (keys.length <= 1) return; // No hay alternativas para rotar
+    
+    if (lastUsedTokenIndex >= 0 && lastUsedTokenIndex < keys.length) {
+        console.log(`[AUTH] Marcando cookie #${lastUsedTokenIndex + 1} como fallida`);
+        failedTokens.add(lastUsedTokenIndex);
+    }
+}
+
+/**
+ * Obtiene el siguiente token disponible después de un fallo
+ * @param {string} authToken - Token de autenticación crudo
+ * @returns {string} Siguiente token procesado
+ */
+function getNextAuthToken(authToken) {
+    return processAuthToken(authToken, true);
+}
+
 module.exports = {
   generateCursorBody,
   chunkToUtf8String,
@@ -303,5 +360,7 @@ module.exports = {
   generateCursorChecksum,
   getAuthToken,
   processAuthToken,
-  parseRotationTime
+  parseRotationTime,
+  markTokenAsFailed,
+  getNextAuthToken
 };

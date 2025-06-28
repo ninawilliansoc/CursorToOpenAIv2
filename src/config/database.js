@@ -26,7 +26,7 @@ class APIKeyDatabase {
             if (fs.existsSync(DB_FILE_PATH)) {
                 const data = JSON.parse(fs.readFileSync(DB_FILE_PATH, 'utf8'));
                 
-                // Cargar API keys
+    // Cargar API keys
                 if (data.apiKeys) {
                     // Asegurar que todas las keys tengan las propiedades de rate limit
                     const completeApiKeys = data.apiKeys.map(([id, keyData]) => {
@@ -500,6 +500,7 @@ class APIKeyDatabase {
         this.usage.clear();
         this.saveToFile();
     }
+    
 }
 
 // Instancia singleton

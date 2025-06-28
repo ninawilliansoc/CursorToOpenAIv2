@@ -6,12 +6,12 @@ const { v4: uuidv4, v5: uuidv5 } = require('uuid');
 const config = require('../config/config');
 const $root = require('../proto/message.js');
 const { generateCursorBody, chunkToUtf8String, generateHashed64Hex, generateCursorChecksum, getAuthToken, processAuthToken } = require('../utils/utils.js');
-const { verifyAPIKey } = require('../middleware/auth');
+const { verifyAPIKey, retryOnError } = require('../middleware/auth');
 
-// Aplicar middleware de verificación de API keys a todas las rutas
-router.use(verifyAPIKey);
+// Ya no aplicamos el middleware globalmente, lo aplicaremos a cada ruta individualmente
 
-router.get("/models", async (req, res) => {
+// Ruta para obtener modelos disponibles - No cuenta como uso para el rate limit
+router.get("/models", verifyAPIKey({ recordUsage: false }), async (req, res) => {
   try{
     const rawAuthToken = getAuthToken(req, config);
     if (!rawAuthToken) {
@@ -26,11 +26,17 @@ router.get("/models", async (req, res) => {
       ?? generateCursorChecksum(authToken.trim());
     const cursorClientVersion = "0.48.7"
 
-    const availableModelsResponse = await fetch("https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels", {
+    // Usar retryOnError para reintentar la solicitud hasta 20 veces en caso de error
+    const availableModelsResponse = await retryOnError(async (currentToken) => {
+      // Si se proporciona un nuevo token por rotación, usarlo
+      const tokenToUse = currentToken || rawAuthToken;
+      const processedToken = processAuthToken(tokenToUse);
+      
+      return await fetch("https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels", {
       method: 'POST',
       headers: {
         'accept-encoding': 'gzip',
-        'authorization': `Bearer ${authToken}`,
+        'authorization': `Bearer ${processedToken}`,
         'connect-protocol-version': '1',
         'content-type': 'application/proto',
         'user-agent': 'connect-es/1.6.1',
@@ -42,6 +48,7 @@ router.get("/models", async (req, res) => {
         'Host': 'api2.cursor.sh',
       },
     })
+    }, 20, rawAuthToken); // Máximo 20 reintentos, pasando el token raw para rotación
     const data = await availableModelsResponse.arrayBuffer();
     const buffer = Buffer.from(data);
     try{
@@ -69,7 +76,8 @@ router.get("/models", async (req, res) => {
   }
 })
 
-router.post('/chat/completions', async (req, res) => {
+// Ruta para chat completions - Sí cuenta como uso para el rate limit
+router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req, res) => {
 
   try {
     const { model, messages, stream = false } = req.body;
@@ -98,11 +106,16 @@ router.post('/chat/completions', async (req, res) => {
     const cursorConfigVersion = uuidv4();
 
     // Request the AvailableModels before StreamChat.
-    const availableModelsResponse = fetch("https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels", {
+    const availableModelsResponse = retryOnError(async (currentToken) => {
+      // Si se proporciona un nuevo token por rotación, usarlo
+      const tokenToUse = currentToken || rawAuthToken;
+      const processedToken = processAuthToken(tokenToUse);
+      
+      return await fetch("https://api2.cursor.sh/aiserver.v1.AiService/AvailableModels", {
       method: 'POST',
       headers: {
         'accept-encoding': 'gzip',
-        'authorization': `Bearer ${authToken}`,
+        'authorization': `Bearer ${processedToken}`,
         'connect-protocol-version': '1',
         'content-type': 'application/proto',
         'user-agent': 'connect-es/1.6.1',
@@ -118,15 +131,23 @@ router.post('/chat/completions', async (req, res) => {
         'Host': 'api2.cursor.sh',
       },
     })
+    }, 20, rawAuthToken); // Máximo 20 reintentos, pasando el token raw para rotación
     
     const cursorBody = generateCursorBody(messages, model);
     const dispatcher = config.proxy.enabled
       ? new ProxyAgent(config.proxy.url, { allowH2: true })
       : new Agent({ allowH2: true });
-    const response = await fetch('https://api2.cursor.sh/aiserver.v1.ChatService/StreamUnifiedChatWithTools', {
+    
+    // Usar retryOnError para reintentar la solicitud hasta 20 veces en caso de error
+    const response = await retryOnError(async (currentToken) => {
+      // Si se proporciona un nuevo token por rotación, usarlo
+      const tokenToUse = currentToken || rawAuthToken;
+      const processedToken = processAuthToken(tokenToUse);
+      
+      return await fetch('https://api2.cursor.sh/aiserver.v1.ChatService/StreamUnifiedChatWithTools', {
       method: 'POST',
       headers: {
-        'authorization': `Bearer ${authToken}`,
+        'authorization': `Bearer ${processedToken}`,
         'connect-accept-encoding': 'gzip',
         'connect-content-encoding': 'gzip',
         'connect-protocol-version': '1',
@@ -150,6 +171,7 @@ router.post('/chat/completions', async (req, res) => {
         read: 30000
       }
     });
+    }, 20, rawAuthToken); // Máximo 20 reintentos, pasando el token raw para rotación
 
     if (response.status !== 200) {
       return res.status(response.status).json({ 

@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { v4: uuidv4, v5: uuidv5 } = require('uuid');
+const { retryOnError } = require('../middleware/auth');
 
 function generatePkcePair() {
   const verifier = crypto.randomBytes(43).toString('base64url');
@@ -14,7 +15,8 @@ function getLoginUrl(uuid, challenge) {
 
 async function queryAuthPoll(uuid, verifier){
   const authPolllUrl = `https://api2.cursor.sh/auth/poll?uuid=${uuid}&verifier=${verifier}`;
-  const response = await fetch(authPolllUrl, {
+  const response = await retryOnError(async () => {
+    return await fetch(authPolllUrl, {
     method: 'GET',
     headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/0.48.6 Chrome/132.0.6834.210 Electron/34.3.4 Safari/537.36",
@@ -22,6 +24,7 @@ async function queryAuthPoll(uuid, verifier){
     },
     timeout: 5000
   });
+  }, 20); // Máximo 20 reintentos
 
   if (response.status === 200) {
     const data = await response.json();
