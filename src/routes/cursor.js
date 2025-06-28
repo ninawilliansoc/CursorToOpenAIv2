@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { generatePkcePair, queryAuthPoll } = require('../tool/cursorLogin.js');
 const config = require('../config/config');
 const { getAuthToken, processAuthToken } = require('../utils/utils.js');
-const { retryOnError } = require('../middleware/auth');
+const { retryOnError, verifyAPIKey } = require('../middleware/auth');
 
 // Ruta para login - No cuenta como uso para el rate limit
 router.get("/loginDeepControl", verifyAPIKey({ recordUsage: false }), async (req, res) => {
