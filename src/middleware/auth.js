@@ -25,6 +25,32 @@ function verifyAPIKey(req, res, next) {
         });
     }
     
+    // Verificar si la API key está bajo rate limit
+    const rateLimit = db.checkAndApplyRateLimit(apiKey);
+    if (rateLimit.limited) {
+        // Construir mensaje según el nivel de rate limit
+        let message;
+        switch (rateLimit.level) {
+            case 1:
+                message = `Has excedido el límite de solicitudes (3 en menos de 2 minutos). Por favor espera ${rateLimit.remainingMinutes} minuto antes de intentar nuevamente.`;
+                break;
+            case 2:
+                message = `Has intentado hacer solicitudes durante un periodo de rate limit. Ahora debes esperar ${rateLimit.remainingMinutes} minutos antes de intentar nuevamente.`;
+                break;
+            case 3:
+                message = `Debido a solicitudes excesivas, ahora debes esperar ${rateLimit.remainingMinutes} minutos antes de intentar nuevamente.`;
+                break;
+            default:
+                message = `Has sido limitado por uso excesivo. Por favor espera ${rateLimit.remainingMinutes} minutos antes de intentar nuevamente.`;
+        }
+        
+        return res.status(429).json({
+            error: 'Demasiadas solicitudes',
+            message: message,
+            retry_after: rateLimit.remainingMinutes * 60 // En segundos
+        });
+    }
+    
     // Registrar el uso de la API key
     db.recordUsage(apiKey);
     
@@ -61,4 +87,4 @@ module.exports = {
     verifyAPIKey,
     requireAdminAuth,
     verifyAdminPassword
-}; 
+};

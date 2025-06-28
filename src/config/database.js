@@ -28,7 +28,18 @@ class APIKeyDatabase {
                 
                 // Cargar API keys
                 if (data.apiKeys) {
-                    this.apiKeys = new Map(data.apiKeys);
+                    // Asegurar que todas las keys tengan las propiedades de rate limit
+                    const completeApiKeys = data.apiKeys.map(([id, keyData]) => {
+                        return [id, {
+                            ...keyData,
+                            // Agregar propiedades de rate limit si no existen
+                            exemptFromRateLimit: keyData.exemptFromRateLimit !== undefined ? keyData.exemptFromRateLimit : false,
+                            rateLimitHistory: keyData.rateLimitHistory || [],
+                            rateLimitUntil: keyData.rateLimitUntil || null,
+                            rateLimitLevel: keyData.rateLimitLevel !== undefined ? keyData.rateLimitLevel : 0
+                        }];
+                    });
+                    this.apiKeys = new Map(completeApiKeys);
                 }
                 
                 // Cargar estadísticas de uso
@@ -104,7 +115,17 @@ class APIKeyDatabase {
                     // Verificar que no exista ya una key con el mismo valor
                     const existingKey = this.getAPIKeyByValue(keyData.apiKey);
                     if (!existingKey) {
-                        this.apiKeys.set(id, keyData);
+                        // Asegurar que las propiedades de rate limit existan
+                        const completeKeyData = {
+                            ...keyData,
+                            // Siempre habilitar rate limit para keys importadas
+                            exemptFromRateLimit: false,
+                            rateLimitHistory: keyData.rateLimitHistory || [],
+                            rateLimitUntil: keyData.rateLimitUntil || null,
+                            rateLimitLevel: keyData.rateLimitLevel !== undefined ? keyData.rateLimitLevel : 0
+                        };
+                        
+                        this.apiKeys.set(id, completeKeyData);
                         importedKeys++;
                     }
                 }
@@ -148,6 +169,10 @@ class APIKeyDatabase {
             description,
             apiKey,
             enabled: true,
+            exemptFromRateLimit: false,
+            rateLimitHistory: [],
+            rateLimitUntil: null,
+            rateLimitLevel: 0,
             createdAt: new Date().toISOString(),
             lastUsed: null,
             totalRequests: 0
@@ -225,6 +250,35 @@ class APIKeyDatabase {
         // Actualizar estadísticas de la key
         keyData.lastUsed = now.toISOString();
         keyData.totalRequests++;
+        
+        // Asegurar que todas las propiedades de rate limit existan
+        if (keyData.exemptFromRateLimit === undefined) {
+            keyData.exemptFromRateLimit = false;
+        }
+        
+        // Actualizar historial de rate limit
+        if (!keyData.rateLimitHistory) {
+            keyData.rateLimitHistory = [];
+        }
+        
+        if (keyData.rateLimitUntil === undefined) {
+            keyData.rateLimitUntil = null;
+        }
+        
+        if (keyData.rateLimitLevel === undefined) {
+            keyData.rateLimitLevel = 0;
+        }
+        
+        // Añadir la marca de tiempo actual al historial
+        keyData.rateLimitHistory.push({
+            timestamp: now.toISOString()
+        });
+        
+        // Mantener solo las últimas 10 solicitudes en el historial
+        if (keyData.rateLimitHistory.length > 10) {
+            keyData.rateLimitHistory = keyData.rateLimitHistory.slice(-10);
+        }
+        
         this.apiKeys.set(keyData.id, keyData);
         
         // Actualizar estadísticas de uso
@@ -276,6 +330,7 @@ class APIKeyDatabase {
         const totalKeys = this.apiKeys.size;
         const enabledKeys = Array.from(this.apiKeys.values()).filter(k => k.enabled).length;
         const totalRequests = Array.from(this.apiKeys.values()).reduce((sum, k) => sum + k.totalRequests, 0);
+        const rateLimitedKeys = Array.from(this.apiKeys.values()).filter(k => k.rateLimitUntil && new Date(k.rateLimitUntil) > new Date()).length;
         
         const today = new Date().toISOString().split('T')[0];
         let todayRequests = 0;
@@ -288,8 +343,155 @@ class APIKeyDatabase {
             totalKeys,
             enabledKeys,
             totalRequests,
-            todayRequests
+            todayRequests,
+            rateLimitedKeys
         };
+    }
+    
+    // Comprobar si una API key está actualmente limitada por rate limit
+    isRateLimited(apiKey) {
+        const keyData = this.getAPIKeyByValue(apiKey);
+        if (!keyData) return { limited: true, reason: 'API key inválida' };
+        
+        // Si la key está exenta de rate limits, siempre devolver false
+        if (keyData.exemptFromRateLimit) {
+            return { limited: false };
+        }
+        
+        // Comprobar si hay un rate limit activo
+        if (keyData.rateLimitUntil) {
+            const now = new Date();
+            const limitUntil = new Date(keyData.rateLimitUntil);
+            
+            if (now < limitUntil) {
+                // Calcular tiempo restante en minutos
+                const remainingMs = limitUntil - now;
+                const remainingMinutes = Math.ceil(remainingMs / (1000 * 60));
+                
+                return {
+                    limited: true,
+                    until: keyData.rateLimitUntil,
+                    remainingMinutes,
+                    level: keyData.rateLimitLevel
+                };
+            }
+        }
+        
+        return { limited: false };
+    }
+    
+    // Comprobar y aplicar rate limit si es necesario
+    checkAndApplyRateLimit(apiKey) {
+        const keyData = this.getAPIKeyByValue(apiKey);
+        if (!keyData) return { limited: true, reason: 'API key inválida' };
+        
+        // Si la key está exenta de rate limits, siempre permitir
+        if (keyData.exemptFromRateLimit) {
+            return { limited: false };
+        }
+        
+        const now = new Date();
+        
+        // Comprobar si hay un rate limit activo
+        if (keyData.rateLimitUntil) {
+            const limitUntil = new Date(keyData.rateLimitUntil);
+            
+            if (now < limitUntil) {
+                // Si intenta usar la API durante un rate limit, aumentar el nivel
+                const newLevel = Math.min(keyData.rateLimitLevel + 1, 3); // Máximo nivel 3
+                let newDuration;
+                
+                switch (newLevel) {
+                    case 1: newDuration = 1 * 60 * 1000; break;  // 1 minuto
+                    case 2: newDuration = 5 * 60 * 1000; break;  // 5 minutos
+                    case 3: newDuration = 20 * 60 * 1000; break; // 20 minutos
+                    default: newDuration = 60 * 60 * 1000;       // 1 hora
+                }
+                
+                const newLimitUntil = new Date(now.getTime() + newDuration);
+                
+                // Actualizar el rate limit
+                keyData.rateLimitLevel = newLevel;
+                keyData.rateLimitUntil = newLimitUntil.toISOString();
+                this.apiKeys.set(keyData.id, keyData);
+                this.saveToFile();
+                
+                // Calcular tiempo restante en minutos
+                const remainingMinutes = Math.ceil(newDuration / (1000 * 60));
+                
+                return {
+                    limited: true,
+                    until: keyData.rateLimitUntil,
+                    remainingMinutes,
+                    level: newLevel,
+                    escalated: true
+                };
+            } else {
+                // Si el rate limit ha expirado, reiniciarlo
+                keyData.rateLimitUntil = null;
+                keyData.rateLimitLevel = 0;
+            }
+        }
+        
+        // Comprobar si ha hecho 3 solicitudes en menos de 2 minutos
+        if (keyData.rateLimitHistory && keyData.rateLimitHistory.length >= 3) {
+            const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000);
+            const recentRequests = keyData.rateLimitHistory
+                .filter(req => new Date(req.timestamp) > twoMinutesAgo)
+                .length;
+            
+            if (recentRequests >= 3) {
+                // Aplicar rate limit de 1 minuto
+                const limitUntil = new Date(now.getTime() + 1 * 60 * 1000);
+                keyData.rateLimitUntil = limitUntil.toISOString();
+                keyData.rateLimitLevel = 1;
+                this.apiKeys.set(keyData.id, keyData);
+                this.saveToFile();
+                
+                return {
+                    limited: true,
+                    until: keyData.rateLimitUntil,
+                    remainingMinutes: 1,
+                    level: 1,
+                    escalated: false
+                };
+            }
+        }
+        
+        return { limited: false };
+    }
+    
+    // Resetear el rate limit de una API key
+    resetRateLimit(id) {
+        const keyData = this.apiKeys.get(id);
+        if (!keyData) return false;
+        
+        keyData.rateLimitUntil = null;
+        keyData.rateLimitLevel = 0;
+        this.apiKeys.set(id, keyData);
+        this.saveToFile();
+        
+        return true;
+    }
+    
+    // Obtener todas las API keys actualmente limitadas por rate limit
+    getRateLimitedKeys() {
+        const now = new Date();
+        const limitedKeys = [];
+        
+        for (let [id, keyData] of this.apiKeys.entries()) {
+            if (keyData.rateLimitUntil && new Date(keyData.rateLimitUntil) > now) {
+                const remainingMs = new Date(keyData.rateLimitUntil) - now;
+                const remainingMinutes = Math.ceil(remainingMs / (1000 * 60));
+                
+                limitedKeys.push({
+                    ...keyData,
+                    remainingMinutes
+                });
+            }
+        }
+        
+        return limitedKeys;
     }
 
     // Limpiar todas las API keys (para reset)
@@ -303,4 +505,4 @@ class APIKeyDatabase {
 // Instancia singleton
 const db = new APIKeyDatabase();
 
-module.exports = db; 
+module.exports = db;

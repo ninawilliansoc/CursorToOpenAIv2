@@ -3,6 +3,7 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const $root = require('../proto/message.js');
+const config = require('../config/config');
 
 function generateCursorBody(messages, modelName) {
 
@@ -222,16 +223,68 @@ function getAuthToken(req, config) {
 }
 
 /**
+ * Parsea el tiempo de rotación de cookies (formato: 5s, 5m, 5h)
+ * @param {string} timeString - Cadena de tiempo con formato (ej: "5m")
+ * @returns {number} Tiempo en milisegundos
+ */
+function parseRotationTime(timeString) {
+    const match = timeString.match(/^(\d+)([smh])$/);
+    if (!match) return 5 * 60 * 1000; // Default: 5 minutos
+
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    
+    switch (unit) {
+        case 's': return value * 1000; // segundos
+        case 'm': return value * 60 * 1000; // minutos
+        case 'h': return value * 60 * 60 * 1000; // horas
+        default: return 5 * 60 * 1000; // Default: 5 minutos
+    }
+}
+
+// Variables para seguimiento de rotación de cookies
+let lastUsedTokenIndex = -1;
+let lastTokenTime = 0;
+
+/**
  * Procesa el token de autenticación para extraer la parte relevante
+ * Implementa rotación de cookies si está habilitado en la configuración
  * @param {string} authToken - Token de autenticación crudo
  * @returns {string} Token procesado
  */
 function processAuthToken(authToken) {
     if (!authToken) return null;
     
-    // Si es un token compuesto, extraer el primer token
+    // Dividir por comas para manejar múltiples tokens
     const keys = authToken.split(',').map((key) => key.trim());
-    let processedToken = keys[Math.floor(Math.random() * keys.length)];
+    let tokenIndex;
+    
+    // Aplicar rotación si está habilitada y hay múltiples cookies
+    if (config.cookieRotation && config.cookieRotation.enabled && keys.length > 1) {
+        const now = Date.now();
+        const rotationTime = parseRotationTime(config.cookieRotation.time);
+        
+        // Verificar si es tiempo de rotar
+        if (lastUsedTokenIndex === -1 || now - lastTokenTime >= rotationTime) {
+            // Rotar al siguiente token
+            tokenIndex = (lastUsedTokenIndex + 1) % keys.length;
+            lastUsedTokenIndex = tokenIndex;
+            lastTokenTime = now;
+            console.log(`[AUTH] Rotando a cookie #${tokenIndex + 1} de ${keys.length}`);
+        } else {
+            // Usar el mismo token si no ha pasado el tiempo de rotación
+            tokenIndex = lastUsedTokenIndex;
+            console.log(`[AUTH] Usando cookie #${tokenIndex + 1} (rotación cada ${config.cookieRotation.time})`);
+        }
+    } else {
+        // Sin rotación, seleccionar un token aleatorio (comportamiento original)
+        tokenIndex = Math.floor(Math.random() * keys.length);
+        if (keys.length > 1) {
+            console.log(`[AUTH] Seleccionando cookie aleatoria #${tokenIndex + 1} de ${keys.length}`);
+        }
+    }
+    
+    let processedToken = keys[tokenIndex];
     
     // Procesar formato de token
     if (processedToken && processedToken.includes('%3A%3A')) {
@@ -249,5 +302,6 @@ module.exports = {
   generateHashed64Hex,
   generateCursorChecksum,
   getAuthToken,
-  processAuthToken
+  processAuthToken,
+  parseRotationTime
 };

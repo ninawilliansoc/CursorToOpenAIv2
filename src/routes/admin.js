@@ -400,6 +400,7 @@ router.get('/', requireAdminAuth, (req, res) => {
         <h1>🔑 Panel de Administración</h1>
         <div class="nav-buttons">
             <a href="/admin/create-key" class="btn btn-primary">+ Nueva API Key</a>
+            <a href="/admin/keys-ratelimit" class="btn btn-primary">🚦 Gestión de Rate Limits</a>
             <a href="/admin/import-export" class="btn btn-primary">📁 Importar/Exportar</a>
             <form method="POST" action="/admin/logout" style="display: inline;">
                 <button type="submit" class="btn btn-danger">Cerrar Sesión</button>
@@ -1814,4 +1815,509 @@ router.get('/import-export', requireAdminAuth, (req, res) => {
     `);
 });
 
-module.exports = router; 
+// Página para gestionar rate limits de API keys
+router.get('/keys-ratelimit', requireAdminAuth, (req, res) => {
+    const apiKeys = db.getAllAPIKeys();
+    
+    res.send(`
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Rate Limits</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #121212;
+            color: #ffffff;
+            line-height: 1.6;
+        }
+        
+        .navbar {
+            background: rgba(18, 18, 18, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #333;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .navbar h1 {
+            color: #64b5f6;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        
+        .nav-buttons {
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s ease;
+            text-align: center;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(45deg, #1976d2, #1565c0);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: linear-gradient(45deg, #1565c0, #0d47a1);
+            transform: translateY(-2px);
+        }
+        
+        .btn-danger {
+            background: linear-gradient(45deg, #d32f2f, #c62828);
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: linear-gradient(45deg, #c62828, #b71c1c);
+            transform: translateY(-2px);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .section h2 {
+            margin-bottom: 1.5rem;
+            color: #64b5f6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .search-sort-container {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: center;
+        }
+        
+        .search-container {
+            flex-grow: 1;
+            display: flex;
+        }
+        
+        .search-input {
+            flex-grow: 1;
+            padding: 10px 16px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            font-size: 16px;
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: #64b5f6;
+        }
+        
+        .sort-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .sort-label {
+            font-size: 0.9rem;
+            color: #b0b0b0;
+        }
+        
+        .sort-select {
+            padding: 8px 12px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+            font-size: 14px;
+        }
+        
+        .sort-select:focus {
+            outline: none;
+            border-color: #64b5f6;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        
+        .table th,
+        .table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .table th {
+            background: rgba(255, 255, 255, 0.05);
+            font-weight: 600;
+            color: #64b5f6;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .table th:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+        
+        .table tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        
+        .status {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .status.enabled {
+            background: rgba(76, 175, 80, 0.2);
+            color: #a5d6a7;
+        }
+        
+        .status.disabled {
+            background: rgba(244, 67, 54, 0.2);
+            color: #ffcdd2;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .btn-small {
+            padding: 4px 8px;
+            font-size: 0.8rem;
+            border-radius: 4px;
+        }
+        
+        .btn-success {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .btn-warning {
+            background: #ff9800;
+            color: white;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #666;
+        }
+        
+        .empty-state i {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            display: block;
+        }
+        
+        .tooltip {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 200px;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 8px;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.8rem;
+            font-weight: normal;
+            text-transform: none;
+        }
+        
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+            
+            .navbar {
+                padding: 1rem;
+                flex-direction: column;
+                gap: 1rem;
+            }
+            
+            .search-sort-container {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <h1>🚦 Gestión de Rate Limits</h1>
+        <div class="nav-buttons">
+            <a href="/admin" class="btn btn-primary">← Volver al Panel</a>
+            <form method="POST" action="/admin/logout" style="display: inline;">
+                <button type="submit" class="btn btn-danger">Cerrar Sesión</button>
+            </form>
+        </div>
+    </nav>
+    
+    <div class="container">
+        <div class="section">
+            <h2>Configuración de Rate Limits</h2>
+            
+            <div class="search-sort-container">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Buscar por nombre..." onkeyup="filterTable()">
+                </div>
+                
+                <div class="sort-container">
+                    <span class="sort-label">Ordenar por:</span>
+                    <select id="sortSelect" class="sort-select" onchange="sortTable()">
+                        <option value="name">Nombre</option>
+                        <option value="requests">Requests (mayor a menor)</option>
+                        <option value="lastUsed">Último uso (reciente primero)</option>
+                        <option value="created">Fecha de creación (reciente primero)</option>
+                    </select>
+                </div>
+            </div>
+            
+            ${apiKeys.length === 0 ? `
+                <div class="empty-state">
+                    <i>🔑</i>
+                    <h3>No hay API keys creadas</h3>
+                    <p>Crea tu primera API key para comenzar</p>
+                </div>
+            ` : `
+                <table class="table" id="keysTable">
+                    <thead>
+                        <tr>
+                            <th onclick="sortTableByColumn(0)">Nombre</th>
+                            <th onclick="sortTableByColumn(1)">Descripción</th>
+                            <th onclick="sortTableByColumn(2)">Estado</th>
+                            <th onclick="sortTableByColumn(3)">Requests</th>
+                            <th onclick="sortTableByColumn(4)">Último Uso</th>
+                            <th onclick="sortTableByColumn(5)">Rate Limit</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${apiKeys.map(key => `
+                            <tr data-name="${key.name}" 
+                                data-requests="${key.totalRequests}" 
+                                data-last-used="${key.lastUsed || '0'}" 
+                                data-created="${key.createdAt}">
+                                <td><strong>${key.name}</strong></td>
+                                <td>${key.description || '-'}</td>
+                                <td><span class="status ${key.enabled ? 'enabled' : 'disabled'}">${key.enabled ? 'Activa' : 'Deshabilitada'}</span></td>
+                                <td>${key.totalRequests}</td>
+                                <td>${key.lastUsed ? new Date(key.lastUsed).toLocaleString('es-ES') : 'Nunca'}</td>
+                                <td>
+                                    <span class="status ${key.exemptFromRateLimit ? 'disabled' : 'enabled'}">
+                                        ${key.exemptFromRateLimit ? 'Desactivado' : 'Activado'}
+                                    </span>
+                                </td>
+                                <td>
+                                    <div class="action-buttons">
+                                        <form method="POST" action="/admin/toggle-ratelimit/${key.id}" style="display: inline;">
+                                            <button type="submit" class="btn btn-small ${key.exemptFromRateLimit ? 'btn-success' : 'btn-warning'} tooltip">
+                                                ${key.exemptFromRateLimit ? 'Activar Rate Limit' : 'Desactivar Rate Limit'}
+                                                <span class="tooltiptext">
+                                                    ${key.exemptFromRateLimit 
+                                                        ? 'Activar el límite de solicitudes para esta API key' 
+                                                        : 'Desactivar el límite de solicitudes para esta API key'}
+                                                </span>
+                                            </button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `}
+        </div>
+    </div>
+    
+    <script>
+        // Función para filtrar la tabla por nombre
+        function filterTable() {
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toUpperCase();
+            const table = document.getElementById('keysTable');
+            const rows = table.getElementsByTagName('tr');
+            
+            for (let i = 1; i < rows.length; i++) {
+                const nameColumn = rows[i].getElementsByTagName('td')[0];
+                if (nameColumn) {
+                    const nameValue = nameColumn.textContent || nameColumn.innerText;
+                    if (nameValue.toUpperCase().indexOf(filter) > -1) {
+                        rows[i].style.display = '';
+                    } else {
+                        rows[i].style.display = 'none';
+                    }
+                }
+            }
+        }
+        
+        // Función para ordenar la tabla según el select
+        function sortTable() {
+            const sortBy = document.getElementById('sortSelect').value;
+            const table = document.getElementById('keysTable');
+            const rows = Array.from(table.getElementsByTagName('tr')).slice(1); // Excluir header
+            const tbody = table.getElementsByTagName('tbody')[0];
+            
+            rows.sort((a, b) => {
+                let valueA, valueB;
+                
+                switch (sortBy) {
+                    case 'name':
+                        valueA = a.dataset.name.toUpperCase();
+                        valueB = b.dataset.name.toUpperCase();
+                        return valueA.localeCompare(valueB);
+                    
+                    case 'requests':
+                        valueA = parseInt(a.dataset.requests);
+                        valueB = parseInt(b.dataset.requests);
+                        return valueB - valueA; // Mayor a menor
+                    
+                    case 'lastUsed':
+                        valueA = a.dataset.lastUsed;
+                        valueB = b.dataset.lastUsed;
+                        return valueB.localeCompare(valueA); // Más reciente primero
+                    
+                    case 'created':
+                        valueA = a.dataset.created;
+                        valueB = b.dataset.created;
+                        return valueB.localeCompare(valueA); // Más reciente primero
+                }
+            });
+            
+            // Reordenar las filas
+            rows.forEach(row => {
+                tbody.appendChild(row);
+            });
+        }
+        
+        // Función para ordenar por columna al hacer clic en el encabezado
+        let sortDirection = 1; // 1 = ascendente, -1 = descendente
+        let lastColumn = -1;
+        
+        function sortTableByColumn(columnIndex) {
+            if (lastColumn === columnIndex) {
+                sortDirection *= -1; // Cambiar dirección si se hace clic en la misma columna
+            } else {
+                sortDirection = 1; // Reiniciar dirección si es una nueva columna
+                lastColumn = columnIndex;
+            }
+            
+            const table = document.getElementById('keysTable');
+            const tbody = table.getElementsByTagName('tbody')[0];
+            const rows = Array.from(tbody.getElementsByTagName('tr'));
+            
+            rows.sort((a, b) => {
+                const cellA = a.getElementsByTagName('td')[columnIndex];
+                const cellB = b.getElementsByTagName('td')[columnIndex];
+                
+                if (!cellA || !cellB) return 0;
+                
+                let valueA = cellA.textContent || cellA.innerText;
+                let valueB = cellB.textContent || cellB.innerText;
+                
+                // Convertir a números si es posible
+                if (!isNaN(valueA) && !isNaN(valueB)) {
+                    return sortDirection * (parseFloat(valueA) - parseFloat(valueB));
+                }
+                
+                // Ordenar por fecha si es la columna de último uso
+                if (columnIndex === 4) {
+                    const dateA = a.dataset.lastUsed;
+                    const dateB = b.dataset.lastUsed;
+                    return sortDirection * dateB.localeCompare(dateA);
+                }
+                
+                // Ordenar alfabéticamente
+                return sortDirection * valueA.localeCompare(valueB);
+            });
+            
+            // Reordenar las filas
+            rows.forEach(row => {
+                tbody.appendChild(row);
+            });
+        }
+    </script>
+</body>
+</html>
+    `);
+});
+
+// Endpoint para activar/desactivar rate limit de una API key
+router.post('/toggle-ratelimit/:id', requireAdminAuth, (req, res) => {
+    const { id } = req.params;
+    const key = db.getAPIKeyById(id);
+    
+    if (!key) {
+        return res.status(404).send('API key no encontrada');
+    }
+    
+    // Cambiar el estado de exemptFromRateLimit
+    db.updateAPIKey(id, { exemptFromRateLimit: !key.exemptFromRateLimit });
+    
+    // Redireccionar de vuelta a la página de rate limits
+    res.redirect('/admin/keys-ratelimit');
+});
+
+module.exports = router;
