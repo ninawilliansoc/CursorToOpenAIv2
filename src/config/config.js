@@ -11,5 +11,7 @@ module.exports = {
         enabled: process.env.PROXY_ENABLED === 'true' || false,
         url: process.env.PROXY_URL || 'http://127.0.0.1:7890',
     },
+    // Control global de rate limit
+    rateLimitEnabled: process.env.RATELIMIT_WORK !== 'false', // Por defecto true si no se especifica
     //chatMode: 1 // 1 for ask, 2 for agent, 3 for edit
 };

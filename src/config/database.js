@@ -353,6 +353,12 @@ class APIKeyDatabase {
         const keyData = this.getAPIKeyByValue(apiKey);
         if (!keyData) return { limited: true, reason: 'API key inválida' };
         
+        // Comprobar configuración global de rate limit
+        const config = require('./config');
+        if (!config.rateLimitEnabled) {
+            return { limited: false };
+        }
+        
         // Si la key está exenta de rate limits, siempre devolver false
         if (keyData.exemptFromRateLimit) {
             return { limited: false };
@@ -384,6 +390,12 @@ class APIKeyDatabase {
     checkAndApplyRateLimit(apiKey) {
         const keyData = this.getAPIKeyByValue(apiKey);
         if (!keyData) return { limited: true, reason: 'API key inválida' };
+        
+        // Comprobar configuración global de rate limit
+        const config = require('./config');
+        if (!config.rateLimitEnabled) {
+            return { limited: false };
+        }
         
         // Si la key está exenta de rate limits, siempre permitir
         if (keyData.exemptFromRateLimit) {
