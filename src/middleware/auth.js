@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const config = require('../config/config');
 const db = require('../config/database');
+const authCookieDB = require('../config/auth_cookies');
 
 // Middleware para verificar API keys y configurar reintentos
 function verifyAPIKey(options = {}) {
@@ -79,7 +80,99 @@ async function retryOnError(fn, maxRetries = 20, rawAuthToken = null) {
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-            return await fn(currentAuthToken);
+            const response = await fn(currentAuthToken);
+            
+            // Verificar si es una respuesta HTTP y si es exitosa (código 200)
+            if (response && response.status === 200 && typeof response.body !== 'undefined') {
+                // Intentar leer el primer chunk para verificar si hay rate limit
+                try {
+                    const reader = response.body.getReader();
+                    const { value, done } = await reader.read();
+                    
+                    if (!done && value) {
+                        // Convertir el chunk a string y verificar si contiene el mensaje de rate limit
+                        const chunk = Buffer.from(value).toString('hex');
+                        const { isRateLimited } = utils.chunkToUtf8String(chunk);
+                        
+                        if (isRateLimited) {
+                            console.log('[RETRY] Detectado mensaje de rate limit en la respuesta');
+                            
+                            // Si tenemos un token de autenticación, marcar la cookie como rate-limited
+                            if (currentAuthToken) {
+                                // Buscar la cookie en la base de datos
+                                const keys = currentAuthToken.split(',').map(key => key.trim());
+                                const processedCurrentToken = utils.processAuthToken(currentAuthToken);
+                                
+                                // Buscar la cookie en la base de datos por su valor
+                                for (const cookie of authCookieDB.getAllAuthCookies()) {
+                                    const processedCookieValue = utils.processAuthToken(cookie.value);
+                                    
+                                    if (cookie.value === processedCurrentToken || processedCookieValue === processedCurrentToken) {
+                                        console.log(`[RETRY] Marcando cookie ${cookie.name} (${cookie.id.substring(0, 8)}...) como rate-limited`);
+                                        authCookieDB.markAsRateLimited(cookie.id);
+                                        break;
+                                    }
+                                }
+                                
+                                // Marcar el token actual como fallido
+                                utils.markTokenAsFailed(currentAuthToken);
+                                
+                                // Obtener el siguiente token disponible
+                                currentAuthToken = utils.getNextAuthToken(currentAuthToken);
+                                
+                                console.log(`[RETRY] Intento ${attempt + 1}/${maxRetries}: Rotando a siguiente auth_cookie después de rate limit`);
+                                
+                                // Crear un nuevo stream con el mismo contenido para devolver
+                                const newStream = new ReadableStream({
+                                    start(controller) {
+                                        controller.enqueue(value);
+                                        controller.close();
+                                    }
+                                });
+                                
+                                // Reintentar con la nueva cookie
+                                continue;
+                            }
+                        }
+                        
+                        // Si no hay rate limit, devolver la respuesta original con un nuevo stream
+                        const newStream = new ReadableStream({
+                            start(controller) {
+                                controller.enqueue(value);
+                                
+                                // Transferir el resto del stream original al nuevo stream
+                                const pump = () => {
+                                    reader.read().then(({ value, done }) => {
+                                        if (done) {
+                                            controller.close();
+                                            return;
+                                        }
+                                        controller.enqueue(value);
+                                        pump();
+                                    }).catch(error => {
+                                        controller.error(error);
+                                    });
+                                };
+                                
+                                pump();
+                            }
+                        });
+                        
+                        // Crear una nueva respuesta con el nuevo stream
+                        return new Response(newStream, {
+                            status: response.status,
+                            statusText: response.statusText,
+                            headers: response.headers
+                        });
+                    }
+                } catch (streamError) {
+                    console.error('[RETRY] Error al leer el stream:', streamError);
+                    // Si hay un error al leer el stream, devolver la respuesta original
+                }
+            }
+            
+            // Si no es una respuesta HTTP o no tiene body, devolver la respuesta original
+            return response;
         } catch (error) {
             lastError = error;
             

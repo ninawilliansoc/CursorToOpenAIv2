@@ -5,7 +5,8 @@ const { fetch, ProxyAgent, Agent } = require('undici');
 const { v4: uuidv4, v5: uuidv5 } = require('uuid');
 const config = require('../config/config');
 const $root = require('../proto/message.js');
-const { generateCursorBody, chunkToUtf8String, generateHashed64Hex, generateCursorChecksum, getAuthToken, processAuthToken } = require('../utils/utils.js');
+const { generateCursorBody, chunkToUtf8String, generateHashed64Hex, generateCursorChecksum, getAuthToken, processAuthToken, handleRateLimitedResponse, testRateLimitedCookie } = require('../utils/utils.js');
+const authCookieDB = require('../config/auth_cookies');
 const { verifyAPIKey, retryOnError } = require('../middleware/auth');
 
 // Ya no aplicamos el middleware globalmente, lo aplicaremos a cada ruta individualmente
@@ -189,21 +190,57 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
       try {
         let thinkingStart = "<thinking>";
         let thinkingEnd = "</thinking>";
+        let isRateLimited = false;
+        let firstChunk = true;
+        
         for await (const chunk of response.body) {
-          const { thinking, text } = chunkToUtf8String(chunk);
-          let content = ""
+          const chunkResult = chunkToUtf8String(chunk);
+          const { thinking, text, isRateLimited: chunkIsRateLimited } = chunkResult;
+          let content = "";
+
+          // Detectar rate limit en el primer chunk
+          if (firstChunk && chunkIsRateLimited) {
+            isRateLimited = true;
+            console.log('[RATE_LIMIT] Detectado mensaje de rate limit en streaming response');
+            
+            // Manejar la rotación de cookies
+            const { shouldRetry, newToken } = handleRateLimitedResponse(rawAuthToken, true);
+            
+            if (shouldRetry) {
+              // Cerrar la respuesta actual
+              res.write(`data: ${JSON.stringify({
+                id: responseId,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: model,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    content: "Rotando a otra cookie debido a rate limit...",
+                  },
+                }],
+              })}\n\n`);
+              
+              // Reintentar con la siguiente cookie
+              // Nota: Esto es recursivo y podría causar problemas si todas las cookies están rate-limited
+              // Pero es la forma más sencilla de implementar la rotación en streaming
+              return router.handle(req, res);
+            }
+          }
+          
+          firstChunk = false;
 
           if (thinkingStart !== "" && thinking.length > 0 ){
-            content += thinkingStart + "\n"
-            thinkingStart = ""
+            content += thinkingStart + "\n";
+            thinkingStart = "";
           }
-          content += thinking
+          content += thinking;
           if (thinkingEnd !== "" && thinking.length === 0 && text.length !== 0 && thinkingStart === "") {
-            content += "\n" + thinkingEnd + "\n"
-            thinkingEnd = ""
+            content += "\n" + thinkingEnd + "\n";
+            thinkingEnd = "";
           }
 
-          content += text
+          content += text;
 
           if (content.length > 0) {
             res.write(
@@ -222,6 +259,17 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
             );
           }
         }
+        
+        // Verificar si hay cookies rate-limited que necesiten ser probadas
+        setTimeout(async () => {
+          const cookiesForTesting = authCookieDB.getCookiesForTesting();
+          if (cookiesForTesting.length > 0) {
+            console.log(`[AUTH] Encontradas ${cookiesForTesting.length} cookies para probar`);
+            for (const cookie of cookiesForTesting) {
+              await testRateLimitedCookie(cookie.id);
+            }
+          }
+        }, 100); // Ejecutar después de que la respuesta haya sido enviada
       } catch (streamError) {
         console.error('Stream error:', streamError);
         if (streamError.name === 'TimeoutError') {
@@ -239,21 +287,52 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
         let thinkingStart = "<thinking>";
         let thinkingEnd = "</thinking>";
         let content = '';
+        let isRateLimited = false;
+        let firstChunk = true;
+        
         for await (const chunk of response.body) {
-          const { thinking, text } = chunkToUtf8String(chunk);
+          const chunkResult = chunkToUtf8String(chunk);
+          const { thinking, text, isRateLimited: chunkIsRateLimited } = chunkResult;
+          
+          // Detectar rate limit en el primer chunk
+          if (firstChunk && chunkIsRateLimited) {
+            isRateLimited = true;
+            console.log('[RATE_LIMIT] Detectado mensaje de rate limit en non-streaming response');
+            
+            // Manejar la rotación de cookies
+            const { shouldRetry, newToken } = handleRateLimitedResponse(rawAuthToken, true);
+            
+            if (shouldRetry) {
+              // Reintentar con la siguiente cookie
+              return router.handle(req, res);
+            }
+          }
+          
+          firstChunk = false;
           
           if (thinkingStart !== "" && thinking.length > 0 ){
-            content += thinkingStart + "\n"
-            thinkingStart = ""
+            content += thinkingStart + "\n";
+            thinkingStart = "";
           }
-          content += thinking
+          content += thinking;
           if (thinkingEnd !== "" && thinking.length === 0 && text.length !== 0 && thinkingStart === "") {
-            content += "\n" + thinkingEnd + "\n"
-            thinkingEnd = ""
+            content += "\n" + thinkingEnd + "\n";
+            thinkingEnd = "";
           }
 
-          content += text
+          content += text;
         }
+        
+        // Verificar si hay cookies rate-limited que necesiten ser probadas
+        setTimeout(async () => {
+          const cookiesForTesting = authCookieDB.getCookiesForTesting();
+          if (cookiesForTesting.length > 0) {
+            console.log(`[AUTH] Encontradas ${cookiesForTesting.length} cookies para probar`);
+            for (const cookie of cookiesForTesting) {
+              await testRateLimitedCookie(cookie.id);
+            }
+          }
+        }, 100); // Ejecutar después de que la respuesta haya sido enviada
 
         return res.json({
           id: `chatcmpl-${uuidv4()}`,
