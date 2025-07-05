@@ -78,6 +78,10 @@ async function retryOnError(fn, maxRetries = 20, rawAuthToken = null) {
     let currentAuthToken = rawAuthToken;
     const utils = require('../utils/utils.js');
     
+    // Contador de intentos totales para evitar bucles infinitos
+    let totalAttempts = 0;
+    const MAX_TOTAL_ATTEMPTS = 50;
+    
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
             const response = await fn(currentAuthToken);
@@ -117,8 +121,8 @@ async function retryOnError(fn, maxRetries = 20, rawAuthToken = null) {
                                 // Marcar el token actual como fallido
                                 utils.markTokenAsFailed(currentAuthToken);
                                 
-                                // Obtener el siguiente token disponible
-                                currentAuthToken = utils.getNextAuthToken(currentAuthToken);
+                                // Obtener el siguiente token disponible (con delay incorporado)
+                                currentAuthToken = await utils.getNextAuthToken(currentAuthToken);
                                 
                                 console.log(`[RETRY] Intento ${attempt + 1}/${maxRetries}: Rotando a siguiente auth_cookie después de rate limit`);
                                 
@@ -129,6 +133,15 @@ async function retryOnError(fn, maxRetries = 20, rawAuthToken = null) {
                                         controller.close();
                                     }
                                 });
+                                
+                                // Incrementar contador de intentos totales
+                                totalAttempts++;
+                                
+                                // Verificar si hemos alcanzado el límite máximo de intentos totales
+                                if (totalAttempts > MAX_TOTAL_ATTEMPTS) {
+                                    console.log(`[RETRY] Alcanzado el límite máximo de ${MAX_TOTAL_ATTEMPTS} intentos totales, abortando`);
+                                    throw new Error('Se alcanzó el límite máximo de intentos totales');
+                                }
                                 
                                 // Reintentar con la nueva cookie
                                 continue;
@@ -176,17 +189,26 @@ async function retryOnError(fn, maxRetries = 20, rawAuthToken = null) {
         } catch (error) {
             lastError = error;
             
+            // Incrementar contador de intentos totales
+            totalAttempts++;
+            
+            // Verificar si hemos alcanzado el límite máximo de intentos totales
+            if (totalAttempts > MAX_TOTAL_ATTEMPTS) {
+                console.log(`[RETRY] Alcanzado el límite máximo de ${MAX_TOTAL_ATTEMPTS} intentos totales, abortando`);
+                throw new Error('Se alcanzó el límite máximo de intentos totales');
+            }
+            
             // Si tenemos un token de autenticación, intentar rotar a la siguiente cookie
             if (currentAuthToken) {
                 // Marcar el token actual como fallido
                 utils.markTokenAsFailed(currentAuthToken);
                 
-                // Obtener el siguiente token disponible
-                currentAuthToken = utils.getNextAuthToken(currentAuthToken);
+                // Obtener el siguiente token disponible (con delay incorporado)
+                currentAuthToken = await utils.getNextAuthToken(currentAuthToken);
                 
-                console.log(`[RETRY] Intento ${attempt + 1}/${maxRetries}: Rotando a siguiente auth_cookie después de error`);
+                console.log(`[RETRY] Intento ${attempt + 1}/${maxRetries} (total: ${totalAttempts}): Rotando a siguiente auth_cookie después de error`);
             } else {
-                console.log(`[RETRY] Intento ${attempt + 1}/${maxRetries}: Reintentando después de error`);
+                console.log(`[RETRY] Intento ${attempt + 1}/${maxRetries} (total: ${totalAttempts}): Reintentando después de error`);
             }
             
             // Esperar un poco antes de reintentar (puedes ajustar el tiempo)

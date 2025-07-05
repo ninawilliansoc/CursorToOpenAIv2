@@ -271,7 +271,10 @@ let lastUsedTokenIndex = -1;
 let lastTokenTime = 0;
 let failedTokens = new Set(); // Conjunto para almacenar índices de tokens fallidos
 let lastFailedResetTime = 0; // Tiempo de último reinicio de tokens fallidos
-const FAILED_TOKEN_RESET_TIME = 1 * 60 * 1000; // 5 minutos para reiniciar tokens fallidos
+const FAILED_TOKEN_RESET_TIME = 1 * 60 * 1000; // 1 minuto para reiniciar tokens fallidos
+let totalAttempts = 0; // Contador de intentos totales en el ciclo actual
+const MAX_TOTAL_ATTEMPTS = 50; // Máximo número de intentos totales para evitar bucles infinitos
+const ROTATION_DELAY = 2000; // Delay de 2 segundos entre rotación de cuentas
 
 /**
  * Procesa el token de autenticación para extraer la parte relevante
@@ -291,6 +294,7 @@ function processAuthToken(authToken, forceRotate = false) {
     const now = Date.now();
     if (now - lastFailedResetTime > FAILED_TOKEN_RESET_TIME) {
         failedTokens.clear();
+        totalAttempts = 0; // Reiniciar contador de intentos totales
         lastFailedResetTime = now;
     }
     
@@ -301,6 +305,16 @@ function processAuthToken(authToken, forceRotate = false) {
             const rotationTime = config.cookieRotation ? parseRotationTime(config.cookieRotation.time) : 5 * 60 * 1000;
             
             if (forceRotate || lastUsedTokenIndex === -1 || now - lastTokenTime >= rotationTime) {
+                // Incrementar contador de intentos totales
+                totalAttempts++;
+                
+                // Verificar si hemos alcanzado el límite máximo de intentos
+                if (totalAttempts > MAX_TOTAL_ATTEMPTS) {
+                    console.log(`[AUTH] Alcanzado el límite máximo de ${MAX_TOTAL_ATTEMPTS} intentos totales, reiniciando estado`);
+                    failedTokens.clear();
+                    totalAttempts = 1; // Reiniciar pero contar este intento
+                }
+                
                 // Buscar el siguiente token que no haya fallado
                 let attemptsCount = 0;
                 let nextIndex = lastUsedTokenIndex;
@@ -310,10 +324,12 @@ function processAuthToken(authToken, forceRotate = false) {
                     nextIndex = (nextIndex + 1) % keys.length;
                     attemptsCount++;
                     
-                    // Si hemos probado todas las cookies y todas han fallado, reiniciar y usar cualquiera
+                    // Si hemos probado todas las cookies y todas han fallado, implementar bucle circular
                     if (attemptsCount > keys.length) {
-                        console.log(`[AUTH] Todas las cookies han fallado, reiniciando estado`);
-                        failedTokens.clear();
+                        console.log(`[AUTH] Todas las cookies han fallado, implementando bucle circular (intento total: ${totalAttempts})`);
+                        // En lugar de reiniciar el estado, volvemos a intentar con la primera cookie
+                        // pero mantenemos el registro de intentos para evitar bucles infinitos
+                        nextIndex = 0; // Volver a la primera cookie
                         break;
                     }
                 } while (failedTokens.has(nextIndex));
@@ -321,7 +337,7 @@ function processAuthToken(authToken, forceRotate = false) {
                 tokenIndex = nextIndex;
                 lastUsedTokenIndex = tokenIndex;
                 lastTokenTime = now;
-                console.log(`[AUTH] ${forceRotate ? 'Forzando rotación' : 'Rotando'} a cookie #${tokenIndex + 1} de ${keys.length}`);
+                console.log(`[AUTH] ${forceRotate ? 'Forzando rotación' : 'Rotando'} a cookie #${tokenIndex + 1} de ${keys.length} (intento total: ${totalAttempts})`);
             } else {
                 // Usar el mismo token si no ha pasado el tiempo de rotación
                 tokenIndex = lastUsedTokenIndex;
@@ -371,9 +387,13 @@ function markTokenAsFailed(authToken) {
 /**
  * Obtiene el siguiente token disponible después de un fallo
  * @param {string} authToken - Token de autenticación crudo
- * @returns {string} Siguiente token procesado
+ * @returns {Promise<string>} Promesa con el siguiente token procesado
  */
-function getNextAuthToken(authToken) {
+async function getNextAuthToken(authToken) {
+    // Esperar el tiempo de delay configurado antes de rotar
+    console.log(`[AUTH] Esperando ${ROTATION_DELAY/1000} segundos antes de rotar a la siguiente cuenta...`);
+    await new Promise(resolve => setTimeout(resolve, ROTATION_DELAY));
+    
     return processAuthToken(authToken, true);
 }
 
@@ -382,9 +402,9 @@ function getNextAuthToken(authToken) {
  * y rotando a la siguiente cookie disponible
  * @param {string} authToken - Token de autenticación crudo
  * @param {boolean} isRateLimited - Si la respuesta está rate-limited
- * @returns {Object} Resultado con el nuevo token y si se debe reintentar
+ * @returns {Promise<Object>} Promesa con el resultado, nuevo token y si se debe reintentar
  */
-function handleRateLimitedResponse(authToken, isRateLimited) {
+async function handleRateLimitedResponse(authToken, isRateLimited) {
     if (!isRateLimited) {
         return { 
             shouldRetry: false,
@@ -418,19 +438,12 @@ function handleRateLimitedResponse(authToken, isRateLimited) {
     // Marcar el token como fallido en la rotación interna
     markTokenAsFailed(authToken);
     
-    // Obtener el siguiente token
-    const nextToken = getNextAuthToken(authToken);
+    // Obtener el siguiente token (con delay incorporado)
+    const nextToken = await getNextAuthToken(authToken);
     
-    // Si no hay más tokens disponibles, no reintentar
-    if (!nextToken || nextToken === processAuthToken(authToken)) {
-        console.log('[AUTH] No hay más cookies disponibles para rotar');
-        return {
-            shouldRetry: false,
-            newToken: authToken
-        };
-    }
-    
-    console.log('[AUTH] Rotando a la siguiente cookie disponible');
+    // Siempre reintentar, incluso si todas las cookies están rate-limited
+    // El bucle circular se implementa en processAuthToken
+    console.log('[AUTH] Rotando a la siguiente cookie disponible (bucle circular)');
     return {
         shouldRetry: true,
         newToken: authToken // El token original, la rotación se maneja internamente

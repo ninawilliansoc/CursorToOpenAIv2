@@ -203,8 +203,8 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
             isRateLimited = true;
             console.log('[RATE_LIMIT] Detectado mensaje de rate limit en streaming response');
             
-            // Manejar la rotación de cookies
-            const { shouldRetry, newToken } = handleRateLimitedResponse(rawAuthToken, true);
+            // Manejar la rotación de cookies (función asíncrona)
+            const { shouldRetry } = await handleRateLimitedResponse(rawAuthToken, true);
             
             if (shouldRetry) {
               // Cerrar la respuesta actual
@@ -299,8 +299,8 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
             isRateLimited = true;
             console.log('[RATE_LIMIT] Detectado mensaje de rate limit en non-streaming response');
             
-            // Manejar la rotación de cookies
-            const { shouldRetry, newToken } = handleRateLimitedResponse(rawAuthToken, true);
+            // Manejar la rotación de cookies (función asíncrona)
+            const { shouldRetry } = await handleRateLimitedResponse(rawAuthToken, true);
             
             if (shouldRetry) {
               // Reintentar con la siguiente cookie
@@ -367,7 +367,7 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
     console.error('Error:', error);
     if (!res.headersSent) {
       const errorMessage = {
-        error: error.name === 'TimeoutError' ? 'Request timeout' : 'Internal server error'
+        error: error && error.name === 'TimeoutError' ? 'Request timeout' : 'Internal server error'
       };
 
       if (req.body.stream) {
