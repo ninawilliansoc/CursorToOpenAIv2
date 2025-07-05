@@ -4,6 +4,7 @@
  */
 
 const authCookieDB = require('../config/auth_cookies');
+// Importar funciones necesarias
 const { testRateLimitedCookie } = require('../utils/utils');
 
 async function testRateLimitedCookies() {

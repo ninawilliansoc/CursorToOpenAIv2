@@ -95,7 +95,7 @@ async function retryOnError(fn, maxRetries = 20, rawAuthToken = null) {
                         const { isRateLimited } = utils.chunkToUtf8String(chunk);
                         
                         if (isRateLimited) {
-                            console.log('[RETRY] Detectado mensaje de rate limit en la respuesta');
+                            console.log('[RETRY] Detectado mensaje de rate limit en la respuesta (formato detectado)');
                             
                             // Si tenemos un token de autenticación, marcar la cookie como rate-limited
                             if (currentAuthToken) {

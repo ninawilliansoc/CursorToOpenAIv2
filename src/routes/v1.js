@@ -198,8 +198,8 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
           const { thinking, text, isRateLimited: chunkIsRateLimited } = chunkResult;
           let content = "";
 
-          // Detectar rate limit en el primer chunk
-          if (firstChunk && chunkIsRateLimited) {
+          // Detectar rate limit en cualquier chunk, no solo el primero
+          if (chunkIsRateLimited) {
             isRateLimited = true;
             console.log('[RATE_LIMIT] Detectado mensaje de rate limit en streaming response');
             
@@ -294,8 +294,8 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
           const chunkResult = chunkToUtf8String(chunk);
           const { thinking, text, isRateLimited: chunkIsRateLimited } = chunkResult;
           
-          // Detectar rate limit en el primer chunk
-          if (firstChunk && chunkIsRateLimited) {
+          // Detectar rate limit en cualquier chunk, no solo el primero
+          if (chunkIsRateLimited) {
             isRateLimited = true;
             console.log('[RATE_LIMIT] Detectado mensaje de rate limit en non-streaming response');
             

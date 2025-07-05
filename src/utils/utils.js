@@ -163,8 +163,19 @@ function chunkToUtf8String(chunk) {
 
 // Verifica si el texto contiene el mensaje de rate limit de Cursor
 function checkForRateLimit(text) {
+  // Versión original (texto plano)
   const rateLimitMessage = "You've hit your free requests limit. Upgrade to Pro for more usage, frontier models, Background Agents, and more.";
-  return text.includes(rateLimitMessage);
+  
+  // Versión con formato markdown (con asteriscos y enlace)
+  const markdownRateLimitMessage = "*You've hit your free requests limit. [Upgrade to Pro](https://www.cursor.com/api/auth/checkoutDeepControl?tier=pro) for more usage, frontier models, Background Agents, and more.*";
+  
+  // URL específica que aparece en el mensaje de rate limit
+  const rateLimitUrl = "https://www.cursor.com/api/auth/checkoutDeepControl?tier=pro";
+  
+  // Verificar cualquiera de las tres condiciones
+  return text.includes(rateLimitMessage) || 
+         text.includes(markdownRateLimitMessage) || 
+         text.includes(rateLimitUrl);
 }
 
 function generateHashed64Hex(input, salt = '') {
@@ -419,6 +430,7 @@ function handleRateLimitedResponse(authToken, isRateLimited) {
         };
     }
     
+    console.log('[AUTH] Rotando a la siguiente cookie disponible');
     return {
         shouldRetry: true,
         newToken: authToken // El token original, la rotación se maneja internamente
