@@ -5,7 +5,7 @@ const { fetch, ProxyAgent, Agent } = require('undici');
 const { v4: uuidv4, v5: uuidv5 } = require('uuid');
 const config = require('../config/config');
 const $root = require('../proto/message.js');
-const { generateCursorBody, chunkToUtf8String, generateHashed64Hex, generateCursorChecksum, getAuthToken, processAuthToken, handleRateLimitedResponse, testRateLimitedCookie } = require('../utils/utils.js');
+const { generateCursorBody, chunkToUtf8String, generateHashed64Hex, generateCursorChecksum, getAuthToken, processAuthToken, handleRateLimitedResponse, testRateLimitedCookie, checkForSuspiciousActivityError } = require('../utils/utils.js');
 const authCookieDB = require('../config/auth_cookies');
 const { verifyAPIKey, retryOnError } = require('../middleware/auth');
 
@@ -82,7 +82,27 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
 
   try {
     const { model, messages, stream = false } = req.body;
-    const rawAuthToken = getAuthToken(req, config);
+    // Verificar si estamos usando el fallback premium para error de actividad sospechosa
+    const usePremiumFallback = req.body._usePremiumFallback === true;
+    
+    // Si IS_PRIV es false, no usamos el sistema de cookies premium/normales
+    let rawAuthToken;
+    if (!config.isPrivilegedMode) {
+      rawAuthToken = getAuthToken(req, config);
+      req.body._normalToken = rawAuthToken; // Guardar el token original para referencia
+      req.body._usePremiumFallback = false; // Desactivar el fallback premium si IS_PRIV es false
+    } else {
+      // Pasar el modelo para seleccionar el tipo de cookie adecuado
+      // Si estamos usando el fallback premium, forzar el uso de una cookie premium
+      rawAuthToken = usePremiumFallback 
+        ? config.getPremiumAuthCookies() 
+        : getAuthToken(req, config, model);
+      
+      // Guardar el token normal para volver a usarlo después del fallback
+      if (usePremiumFallback && !req.body._normalToken) {
+        req.body._normalToken = getAuthToken(req, config, model);
+      }
+    }
     
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({
@@ -175,8 +195,52 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
     }, 20, rawAuthToken); // Máximo 20 reintentos, pasando el token raw para rotación
 
     if (response.status !== 200) {
+      // Verificar si es el error específico de actividad sospechosa
+      let responseBody;
+      try {
+        responseBody = await response.json();
+      } catch (e) {
+        // Si no se puede parsear como JSON, continuar con el error original
+      }
+
+      if (responseBody) {
+        const isSuspiciousActivity = checkForSuspiciousActivityError({ body: responseBody });
+        
+        if (isSuspiciousActivity) {
+          console.log('[AUTH] Detectado error de actividad sospechosa en la respuesta no streaming');
+          
+          // Si IS_PRIV es true, intentar con cookie premium como fallback
+          if (config.isPrivilegedMode) {
+            // Manejar el error con posible uso de cookie premium
+            const { shouldRetry, newToken, usePremium } = await handleRateLimitedResponse(
+              rawAuthToken, 
+              false, // No es rate limit
+              true,  // Es actividad sospechosa
+              model,
+              config
+            );
+            
+            if (shouldRetry) {
+              if (usePremium) {
+                console.log('[AUTH] Reintentando con cookie premium como fallback');
+                // Crear una nueva solicitud con el token premium
+                req.body._usePremiumFallback = true; // Marcar para evitar bucles infinitos
+                return router.handle(req, res);
+              } else {
+                // Reintentar con la siguiente cookie normal
+                console.log('[AUTH] Reintentando con la siguiente cookie normal');
+                return router.handle(req, res);
+              }
+            }
+          } else {
+            // Si IS_PRIV es false, simplemente devolver el error
+            console.log('[AUTH] Error de actividad sospechosa pero IS_PRIV es false, no se usa fallback premium');
+          }
+        }
+      }
+      
       return res.status(response.status).json({ 
-        error: response.statusText 
+        error: responseBody?.error || response.statusText 
       });
     }
 
@@ -229,6 +293,13 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
           }
           
           firstChunk = false;
+          
+          // Si usamos fallback premium y no hay rate limit, restaurar el token normal para la próxima solicitud
+          if (req.body._usePremiumFallback && !isRateLimited && firstChunk === false) {
+            // Solo restauramos si la solicitud actual no tiene rate limit
+            console.log('[AUTH] Solicitud streaming completada con éxito usando cookie premium, volviendo a usar cookies normales para próximas solicitudes');
+            req.body._usePremiumFallback = false;
+          }
 
           if (thinkingStart !== "" && thinking.length > 0 ){
             content += thinkingStart + "\n";
@@ -309,6 +380,13 @@ router.post('/chat/completions', verifyAPIKey({ recordUsage: true }), async (req
           }
           
           firstChunk = false;
+          
+          // Si usamos fallback premium y no hay rate limit, restaurar el token normal para la próxima solicitud
+          if (req.body._usePremiumFallback && !isRateLimited && firstChunk === false) {
+            // Solo restauramos si la solicitud actual no tiene rate limit
+            console.log('[AUTH] Solicitud completada con éxito usando cookie premium, volviendo a usar cookies normales para próximas solicitudes');
+            req.body._usePremiumFallback = false;
+          }
           
           if (thinkingStart !== "" && thinking.length > 0 ){
             content += thinkingStart + "\n";

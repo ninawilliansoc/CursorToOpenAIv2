@@ -178,6 +178,24 @@ function checkForRateLimit(text) {
          text.includes(rateLimitUrl);
 }
 
+// Verifica si la respuesta contiene el error específico de actividad sospechosa
+function checkForSuspiciousActivityError(response) {
+  if (!response || !response.body) return false;
+  
+  try {
+    // Intentar parsear el cuerpo de la respuesta como JSON
+    const responseBody = typeof response.body === 'string' ? JSON.parse(response.body) : response.body;
+    
+    // Verificar si es el error específico
+    return responseBody?.error?.code === 'unauthenticated' && 
+           responseBody?.error?.details?.[0]?.debug?.error === 'ERROR_UNAUTHORIZED' &&
+           responseBody?.error?.details?.[0]?.debug?.details?.detail?.includes('Your request has been blocked as our system has detected suspicious activity from your account');
+  } catch (error) {
+    // Si hay un error al parsear el JSON, no es el error que buscamos
+    return false;
+  }
+}
+
 function generateHashed64Hex(input, salt = '') {
   const hash = crypto.createHash('sha256');
   hash.update(input + salt);
@@ -216,15 +234,40 @@ function generateCursorChecksum(token) {
 /**
  * Obtiene el token de autenticación desde la configuración o headers
  * Prioriza API keys autenticadas, luego AUTH_COOKIEs combinadas (entorno + base de datos), luego el header Authorization
+ * Si se proporciona un modelo y el modo privilegiado está activado, selecciona el tipo de cookie adecuado
  * @param {Object} req - Objeto request de Express
  * @param {Object} config - Configuración de la aplicación
+ * @param {string} model - Modelo solicitado (opcional)
  * @returns {string|null} Token de autenticación
  */
-function getAuthToken(req, config) {
+function getAuthToken(req, config, model = null) {
     // Si hay una API key autenticada, usar el AUTH_COOKIE configurado (esto significa que la API key es válida)
     if (req.isAPIKeyAuth && config.authCookie) {
         console.log('[AUTH] Usando AUTH_COOKIE para API key autenticada:', req.apiKey.name);
+        
+        // Si estamos en modo privilegiado y se especificó un modelo, seleccionar el tipo de cookie adecuado
+        if (config.isPrivilegedMode && model) {
+            if (config.premiumModels.includes(model)) {
+                console.log(`[AUTH] Modelo ${model} requiere cookie premium`);
+                return config.getPremiumAuthCookies() || config.authCookie;
+            } else {
+                console.log(`[AUTH] Modelo ${model} usa cookie normal`);
+                return config.getNormalAuthCookies() || config.authCookie;
+            }
+        }
+        
         return config.authCookie;
+    }
+    
+    // Si estamos en modo privilegiado y se especificó un modelo, seleccionar el tipo de cookie adecuado
+    if (config.isPrivilegedMode && model && config.authCookie) {
+        if (config.premiumModels.includes(model)) {
+            console.log(`[AUTH] Modelo ${model} requiere cookie premium`);
+            return config.getPremiumAuthCookies() || config.authCookie;
+        } else {
+            console.log(`[AUTH] Modelo ${model} usa cookie normal`);
+            return config.getNormalAuthCookies() || config.authCookie;
+        }
     }
     
     // Priorizar AUTH_COOKIEs combinadas (entorno + base de datos)
@@ -398,21 +441,30 @@ async function getNextAuthToken(authToken) {
 }
 
 /**
- * Maneja respuestas con rate limit, marcando la cookie actual como rate-limited
- * y rotando a la siguiente cookie disponible
+ * Maneja respuestas con rate limit o error de actividad sospechosa,
+ * marcando la cookie actual como rate-limited y rotando a la siguiente cookie disponible
  * @param {string} authToken - Token de autenticación crudo
  * @param {boolean} isRateLimited - Si la respuesta está rate-limited
+ * @param {boolean} isSuspiciousActivity - Si la respuesta contiene el error de actividad sospechosa
+ * @param {string} model - Modelo solicitado (para usar premium si es necesario)
+ * @param {Object} config - Configuración de la aplicación
  * @returns {Promise<Object>} Promesa con el resultado, nuevo token y si se debe reintentar
  */
-async function handleRateLimitedResponse(authToken, isRateLimited) {
-    if (!isRateLimited) {
+async function handleRateLimitedResponse(authToken, isRateLimited, isSuspiciousActivity = false, model = null, config = null) {
+    if (!isRateLimited && !isSuspiciousActivity) {
         return { 
             shouldRetry: false,
-            newToken: authToken 
+            newToken: authToken,
+            usePremium: false
         };
     }
     
-    console.log('[AUTH] Detectado mensaje de rate limit en la respuesta');
+    // Mensaje de log según el tipo de error
+    if (isRateLimited) {
+        console.log('[AUTH] Detectado mensaje de rate limit en la respuesta');
+    } else if (isSuspiciousActivity) {
+        console.log('[AUTH] Detectado error de actividad sospechosa en la respuesta');
+    }
     
     // Obtener el ID de la cookie actual
     const authCookieDB = require('../config/auth_cookies');
@@ -428,13 +480,33 @@ async function handleRateLimitedResponse(authToken, isRateLimited) {
             const currentProcessed = processAuthToken(currentToken);
             
             if (cookie.value === currentToken || processedValue === currentProcessed) {
-                console.log(`[AUTH] Marcando cookie ${cookie.name} (${cookie.id.substring(0, 8)}...) como rate-limited por 12 horas`);
-                authCookieDB.markAsRateLimited(cookie.id);
+                if (isRateLimited) {
+                    console.log(`[AUTH] Marcando cookie ${cookie.name} (${cookie.id.substring(0, 8)}...) como rate-limited por 12 horas`);
+                    authCookieDB.markAsRateLimited(cookie.id);
+                } else if (isSuspiciousActivity) {
+                    console.log(`[AUTH] Cookie ${cookie.name} (${cookie.id.substring(0, 8)}...) ha encontrado error de actividad sospechosa`);
+                }
                 break;
             }
         }
     }
     
+    // Si es un error de actividad sospechosa y estamos en modo privilegiado, intentar con una cookie premium
+    if (isSuspiciousActivity && config && config.isPrivilegedMode) {
+        console.log('[AUTH] Intentando usar cookie premium como fallback para el error de actividad sospechosa');
+        const premiumToken = config.getPremiumAuthCookies();
+        
+        if (premiumToken) {
+            console.log('[AUTH] Usando cookie premium como fallback');
+            return {
+                shouldRetry: true,
+                newToken: premiumToken,
+                usePremium: true
+            };
+        }
+    }
+    
+    // Para rate limit normal o si no hay cookies premium disponibles
     // Marcar el token como fallido en la rotación interna
     markTokenAsFailed(authToken);
     
@@ -446,7 +518,8 @@ async function handleRateLimitedResponse(authToken, isRateLimited) {
     console.log('[AUTH] Rotando a la siguiente cookie disponible (bucle circular)');
     return {
         shouldRetry: true,
-        newToken: authToken // El token original, la rotación se maneja internamente
+        newToken: authToken, // El token original, la rotación se maneja internamente
+        usePremium: false
     };
 }
 
@@ -559,6 +632,7 @@ module.exports = {
   markTokenAsFailed,
   getNextAuthToken,
   checkForRateLimit,
+  checkForSuspiciousActivityError,
   handleRateLimitedResponse,
   testRateLimitedCookie
 };

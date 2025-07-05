@@ -2708,6 +2708,9 @@ router.get('/auth-cookies', requireAdminAuth, (req, res) => {
 
 // Página para crear nueva AUTH_COOKIE
 router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
+    // Verificar si estamos en modo privilegiado
+    const isPrivilegedMode = config.isPrivilegedMode;
+    
     res.send(`
 <!DOCTYPE html>
 <html lang="es">
@@ -2781,7 +2784,8 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
         }
         
         input[type="text"],
-        textarea {
+        textarea,
+        select {
             width: 100%;
             padding: 12px 16px;
             border: 2px solid rgba(255, 255, 255, 0.2);
@@ -2794,7 +2798,8 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
         }
         
         input[type="text"]:focus,
-        textarea:focus {
+        textarea:focus,
+        select:focus {
             outline: none;
             border-color: #64b5f6;
             box-shadow: 0 0 20px rgba(100, 181, 246, 0.3);
@@ -2803,6 +2808,11 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
         input[type="text"]::placeholder,
         textarea::placeholder {
             color: #b0b0b0;
+        }
+        
+        select option {
+            background: #121212;
+            color: #ffffff;
         }
         
         textarea {
@@ -2881,6 +2891,21 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
             font-size: 1rem;
         }
         
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-left: 5px;
+            vertical-align: middle;
+        }
+        
+        .badge-premium {
+            background: linear-gradient(45deg, #ff9800, #ff5722);
+            color: white;
+        }
+        
         @media (max-width: 768px) {
             .container {
                 padding: 1rem;
@@ -2923,6 +2948,7 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
             <div class="info-box">
                 <h3>ℹ️ Información</h3>
                 <p>Las AUTH_COOKIEs son utilizadas para autenticarse con el servicio de Cursor. Puedes obtener tu cookie ejecutando <code>npm run login</code> en la línea de comandos.</p>
+                ${isPrivilegedMode ? `<p><strong>Modo privilegiado activado:</strong> Puedes marcar cookies como premium para modelos avanzados.</p>` : ''}
             </div>
             
             <form method="POST" action="/admin/create-auth-cookie">
@@ -2941,6 +2967,19 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
                     <textarea id="description" name="description" placeholder="Descripción opcional de para qué se usará esta AUTH_COOKIE"></textarea>
                 </div>
                 
+                ${isPrivilegedMode ? `
+                <div class="form-group">
+                    <label for="type">Tipo de Cookie</label>
+                    <select id="type" name="type">
+                        <option value="normal">Normal</option>
+                        <option value="premium">Premium <span class="badge badge-premium">PRO</span></option>
+                    </select>
+                    <p style="margin-top: 8px; font-size: 0.9rem; color: #b0b0b0;">
+                        Las cookies premium se utilizan para modelos avanzados como ${config.premiumModels.join(', ')}
+                    </p>
+                </div>
+                ` : ''}
+                
                 <div class="form-actions">
                     <button type="submit" class="btn btn-primary">🍪 Crear AUTH_COOKIE</button>
                     <a href="/admin/auth-cookies" class="btn btn-secondary">Cancelar</a>
@@ -2955,7 +2994,7 @@ router.get('/create-auth-cookie', requireAdminAuth, (req, res) => {
 
 // Procesar creación de AUTH_COOKIE
 router.post('/create-auth-cookie', requireAdminAuth, (req, res) => {
-    const { name, value, description } = req.body;
+    const { name, value, description, type } = req.body;
     
     if (!name || name.trim() === '') {
         return res.redirect('/admin/create-auth-cookie?error=name');
@@ -2965,7 +3004,19 @@ router.post('/create-auth-cookie', requireAdminAuth, (req, res) => {
         return res.redirect('/admin/create-auth-cookie?error=value');
     }
     
-    const newCookie = authCookieDB.createAuthCookie(name.trim(), value.trim(), description?.trim() || '');
+    // Crear cookie con tipo si estamos en modo privilegiado
+    const cookieData = {
+        name: name.trim(),
+        value: value.trim(),
+        description: description?.trim() || ''
+    };
+    
+    // Si estamos en modo privilegiado y se especificó un tipo, guardarlo
+    if (config.isPrivilegedMode && type) {
+        cookieData.type = type;
+    }
+    
+    const newCookie = authCookieDB.createAuthCookie(cookieData);
     res.redirect('/admin/auth-cookies');
 });
 

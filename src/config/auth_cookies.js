@@ -65,12 +65,28 @@ class AuthCookieDatabase {
 
     // Actualizar la configuración con las cookies de la base de datos
     updateConfigAuthCookies() {
-        const enabledCookies = this.getAllAuthCookies()
-            .filter(cookie => cookie.enabled && !cookie.rateLimited)
-            .map(cookie => cookie.value);
-        
-        if (typeof config.updateDBAuthCookies === 'function') {
-            config.updateDBAuthCookies(enabledCookies);
+        // Si estamos en modo privilegiado, separamos las cookies por tipo
+        if (config.isPrivilegedMode) {
+            const normalCookies = this.getAllAuthCookies()
+                .filter(cookie => cookie.enabled && !cookie.rateLimited && cookie.type === 'normal')
+                .map(cookie => cookie.value);
+                
+            const premiumCookies = this.getAllAuthCookies()
+                .filter(cookie => cookie.enabled && !cookie.rateLimited && cookie.type === 'premium')
+                .map(cookie => cookie.value);
+            
+            if (typeof config.updateDBAuthCookies === 'function') {
+                config.updateDBAuthCookies(normalCookies, premiumCookies);
+            }
+        } else {
+            // En modo normal, enviamos todas las cookies como normales
+            const enabledCookies = this.getAllAuthCookies()
+                .filter(cookie => cookie.enabled && !cookie.rateLimited)
+                .map(cookie => cookie.value);
+            
+            if (typeof config.updateDBAuthCookies === 'function') {
+                config.updateDBAuthCookies(enabledCookies);
+            }
         }
     }
 
@@ -123,19 +139,23 @@ class AuthCookieDatabase {
     }
 
     // Crear una nueva AUTH_COOKIE
-    createAuthCookie(name, value, description = '') {
+    createAuthCookie(name, value, description = '', type = 'normal') {
         const id = uuidv4();
         const cookieData = {
             id,
             name,
             value,
             description,
+            // Si el modo privilegiado está activado, usar el tipo proporcionado
+            // De lo contrario, siempre usar 'normal'
+            type: config.isPrivilegedMode ? type : 'normal',
             enabled: true,
             rateLimited: false,
             rateLimitedAt: null,
             nextTestAt: null,
             createdAt: new Date().toISOString(),
-            lastUsed: null
+            lastUsed: null,
+            usageCount: 0
         };
         
         this.authCookies.set(id, cookieData);
@@ -167,6 +187,22 @@ class AuthCookieDatabase {
             }
         }
         return null;
+    }
+    
+    // Obtener AUTH_COOKIE por tipo
+    getAuthCookiesByType(type) {
+        return Array.from(this.authCookies.values())
+            .filter(cookie => cookie.type === type && cookie.enabled && !cookie.rateLimited);
+    }
+    
+    // Obtener una AUTH_COOKIE disponible por tipo
+    getAvailableAuthCookieByType(type) {
+        const cookies = this.getAuthCookiesByType(type);
+        if (cookies.length === 0) return null;
+        
+        // Si hay cookies disponibles, devolver una aleatoria
+        const randomIndex = Math.floor(Math.random() * cookies.length);
+        return cookies[randomIndex];
     }
 
     // Actualizar AUTH_COOKIE
@@ -211,6 +247,7 @@ class AuthCookieDatabase {
         
         // Actualizar estadísticas de la cookie
         cookieData.lastUsed = now.toISOString();
+        cookieData.usageCount = (cookieData.usageCount || 0) + 1;
         
         this.authCookies.set(id, cookieData);
         
@@ -378,11 +415,22 @@ class AuthCookieDatabase {
         const rateLimitedCookies = cookies.filter(c => c.rateLimited).length;
         const availableCookies = cookies.filter(c => c.enabled && !c.rateLimited).length;
         
+        // Estadísticas por tipo (solo en modo privilegiado)
+        let normalCookies = 0;
+        let premiumCookies = 0;
+        
+        if (config.isPrivilegedMode) {
+            normalCookies = cookies.filter(c => c.type === 'normal' && c.enabled && !c.rateLimited).length;
+            premiumCookies = cookies.filter(c => c.type === 'premium' && c.enabled && !c.rateLimited).length;
+        }
+        
         return {
             totalCookies,
             enabledCookies,
             rateLimitedCookies,
-            availableCookies
+            availableCookies,
+            normalCookies: config.isPrivilegedMode ? normalCookies : availableCookies,
+            premiumCookies: config.isPrivilegedMode ? premiumCookies : 0
         };
     }
 
