@@ -3016,7 +3016,12 @@ router.post('/create-auth-cookie', requireAdminAuth, (req, res) => {
         cookieData.type = type;
     }
     
-    const newCookie = authCookieDB.createAuthCookie(cookieData);
+    const newCookie = authCookieDB.createAuthCookie(
+        cookieData.name,
+        cookieData.value,
+        cookieData.description,
+        cookieData.type || 'normal'
+    );
     res.redirect('/admin/auth-cookies');
 });
 
